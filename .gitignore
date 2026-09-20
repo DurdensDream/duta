@@ -1,0 +1,28 @@
+# secrets & local env
+.env
+*.local.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# node / ui
+node_modules/
+ui/dist/
+
+# generated data (regenerate with `make seed`)
+data/dropzone/*.csv
+data/generated/
+
+# editor & os
+.DS_Store
+.idea/
+.vscode/
+
+# scratch — NOTE: evals/results/metrics.json is committed on purpose; do not ignore it
+scratch/

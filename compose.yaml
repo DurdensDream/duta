@@ -1,0 +1,102 @@
+name: duta
+
+services:
+  # ---------------- staged customer environment ----------------
+  crm-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: meridian
+      POSTGRES_PASSWORD: meridian
+      POSTGRES_DB: talentbase
+    ports: ["5433:5432"]
+    volumes:
+      - ./sim/crm/init/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./sim/crm/init/02-roles.sql:/docker-entrypoint-initdb.d/02-roles.sql:ro
+      - ./data/generated/crm_seed.sql:/docker-entrypoint-initdb.d/03-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meridian -d talentbase"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  vendor-sim:
+    build: ./sim/kestrel
+    environment:
+      KESTREL_STORE: /data/kestrel_store.json
+      KESTREL_CLIENT_ID: meridian-pilot
+      KESTREL_CLIENT_SECRET: kestrel-pilot-secret-2026
+    volumes:
+      - ./data/generated:/data:ro
+    ports: ["8100:8100"]
+
+  # ---------------- pilot infrastructure ----------------
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: duta
+      POSTGRES_PASSWORD: duta
+      POSTGRES_DB: duta
+    ports: ["5434:5432"]
+    volumes:
+      - ./services/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duta -d duta"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    depends_on:
+      app-db:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: duta
+      POSTGRES_PWD: duta
+      POSTGRES_SEEDS: app-db
+    ports: ["7233:7233"]
+
+  temporal-ui:
+    image: temporalio/ui:2.26.2
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["8233:8080"]
+
+  # ---------------- pilot services ----------------
+  api:
+    build: ./services
+    depends_on:
+      app-db:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment: &appenv
+      APP_DB_DSN: postgresql://duta:duta@app-db:5432/duta
+      CRM_DB_DSN: postgresql://duta_ro:duta_ro_pw@crm-db:5432/talentbase
+      KESTREL_BASE_URL: http://vendor-sim:8100
+      KESTREL_CLIENT_ID: meridian-pilot
+      KESTREL_CLIENT_SECRET: kestrel-pilot-secret-2026
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./services
+    command: ["python", "-m", "duta.worker"]
+    restart: unless-stopped
+    depends_on:
+      app-db:
+        condition: service_healthy
+      crm-db:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      vendor-sim:
+        condition: service_started
+    environment:
+      <<: *appenv
+      JOBWIRE_DROPZONE: /dropzone
+    volumes:
+      - ./data/dropzone:/dropzone:ro
